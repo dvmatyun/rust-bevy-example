@@ -1,0 +1,41 @@
+[package]
+name = "rust-bevy-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.14", default-features = false, features = [
+    "animation",
+    "bevy_asset",
+    "bevy_audio",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gltf",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_scene",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_winit",
+    "default_font",
+    "hdr",
+    "ktx2",
+    "multi_threaded",
+    "png",
+    "tonemapping_luts",
+    "vorbis",
+    "x11",
+    "zstd",
+] }
+rand = "0.8"
+
+# Enable a small amount of optimization in debug mode for smoother gameplay
+[profile.dev]
+opt-level = 1
+
+# Enable high optimizations for dependencies (incl. Bevy), but not for our code
+[profile.dev.package."*"]
+opt-level = 3
