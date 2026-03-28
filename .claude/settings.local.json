@@ -4,7 +4,8 @@
       "WebFetch(domain:bevy.org)",
       "Bash(ls -la \"c:\\\\Repositories\\\\Rust\\\\rust-bevy-example\\\\flutter_rust_wrap\\\\windows\"\" 2>/dev/null || echo \"Directory might not exist \")",
       "Bash(C:/Users/worc1/AppData/Local/Android/Sdk/platform-tools/adb.exe shell:*)",
-      "Bash(C:/Users/worc1/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat:*)"
+      "Bash(C:/Users/worc1/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

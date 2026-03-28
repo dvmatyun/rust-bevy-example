@@ -21,7 +21,7 @@ This project targets **all four platforms** and must be kept working on all of t
   cargo apk build -p my_bevy_game --lib
   ```
 - **Web:** `cd my_bevy_game && trunk serve` (requires `trunk` installed)
-- **iOS:** `cargo build -p my_bevy_game --target aarch64-apple-ios --release` then Xcode
+- **iOS (on macOS):** Open `my_bevy_game/my_bevy_game.xcodeproj` in Xcode, select a team/device, and build. The Xcode project runs `build_rust_deps.sh` automatically to compile Rust for `aarch64-apple-ios` (device) or `aarch64-apple-ios-sim` (M-series simulator). Requires Rust targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`
 
 ## Android Setup (already done)
 - NDK at `C:/Users/worc1/AppData/Local/Android/Sdk/ndk/28.0.12916984`
@@ -29,6 +29,15 @@ This project targets **all four platforms** and must be kept working on all of t
 - `cargo-apk` installed
 - Always use `--lib` flag: `cargo apk build -p my_bevy_game --lib` (avoids bin/cdylib conflict panic)
 - Test device: **Xiaomi 21081111RG, Mali-G77 MC9, Android 14**
+
+## Bevy 0.19-dev UI Overlay (CRITICAL — do not repeat these mistakes)
+
+> **Full detailed log with all UI lessons:** [docsai/bevy-ui-lessons.md](docsai/bevy-ui-lessons.md)
+
+- **`bevy_ui_render` is mandatory** for visible UI. `bevy_ui` alone = invisible nodes, zero errors.
+- Use `WinitSettings::game()` on desktop, `WinitSettings::mobile()` only on Android/iOS (mobile suppresses continuous rendering).
+- Use default windowed mode on desktop; `BorderlessFullscreen` only on mobile via `#[cfg]`.
+- `windows` crate lockfile conflict fix: `cargo update windows@0.61.3 --precise 0.62.2`
 
 ## Android Debugging Lessons (CRITICAL — do not repeat these mistakes)
 
@@ -40,6 +49,7 @@ This project targets **all four platforms** and must be kept working on all of t
 - The dependency uses `path = "C:/Repositories/Rust/bevy"` pointing to local Bevy 0.19-dev.
 
 ### Feature flags that matter
+- **`bevy_ui_render`** — **CRITICAL for UI overlay.** `bevy_ui` alone only provides ECS types; `bevy_ui_render` actually draws them. Without it: UI nodes silently invisible, no errors. Also requires `bevy_sprite_render` + `bevy_sprite`.
 - `android-native-activity` — required by `cargo-apk` (NOT `android-game-activity`)
 - `android_shared_stdcxx` — bundles `libc++_shared.so` into APK. **Required when `bevy_audio` is enabled** (Oboe is C++). Without it: `__cxa_pure_virtual` crash on load. NOT available in Bevy 0.19-dev (not needed without audio).
 - `tonemapping_luts` + `hdr` + `ktx2` + `zstd_rust` — **required for the renderer to initialize**. Without these: purple screen → crash on all platforms.
@@ -47,6 +57,8 @@ This project targets **all four platforms** and must be kept working on all of t
 - In Bevy 0.18.1: `zstd_rust` (NOT `zstd`). In Bevy 0.19-dev: also `zstd_rust`.
 - `bevy_diagnostic` and `bevy_input` are NOT Cargo features — they're always included.
 - `FontSize::Px(30.0)` is required in 0.19-dev; plain `30.0` works in 0.18.1.
+- `shadows_enabled` renamed to `shadow_maps_enabled` in 0.19-dev.
+- `ChildBuilder` renamed to `ChildSpawnerCommands` in 0.19-dev.
 
 ### crate-type in Cargo.toml
 - Use `["cdylib", "rlib"]` — cdylib for Android .so, rlib for desktop binary linkage.
@@ -85,3 +97,5 @@ Msaa::Off,
 - [x] In-game UI — +1/-1/+10/-10/+100/-100 cube count buttons, FPS/frame-time/avg/1%low HUD overlay
 - [x] Multi-platform build setup — `webgl2` feature, `android-native-activity` feature, `index.html` for Trunk, `[lib] cdylib+rlib`, `#[bevy_main]`, Android APK verified building (`cargo apk build --lib`)
 - [x] Android APK running on Mali-G77 — patched Bevy 0.19-dev PBR cluster bindings, Vulkan rendering working, no SIGSEGV
+- [x] iOS Xcode project setup — `my_bevy_game.xcodeproj`, `build_rust_deps.sh` (multi-arch lipo), `Info.plist`, iOS Window settings (status bar hidden, home indicator hidden, rotation gesture)
+- [x] UI overlay working on Bevy 0.19-dev — required `bevy_ui_render` + `bevy_sprite_render` features, `WinitSettings::game()` on desktop, windowed mode on desktop via `#[cfg]`
