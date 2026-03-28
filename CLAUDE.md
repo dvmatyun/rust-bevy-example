@@ -32,6 +32,8 @@ This project targets **all four platforms** and must be kept working on all of t
 
 ## Android Debugging Lessons (CRITICAL — do not repeat these mistakes)
 
+> **Full detailed log with all 10 problems and fixes:** [docsai/android-debugging-log.md](docsai/android-debugging-log.md)
+
 ### Bevy version: must use local 0.19-dev, NOT published 0.18.1
 - **Bevy 0.18.1 + Mali-G77 = SIGSEGV** in `wgpu_hal::vulkan::command::CommandEncoder::begin_encoding` during `queue_submit`. This is a wgpu Vulkan bug fixed in newer wgpu (shipped in Bevy 0.19-dev). **No workaround exists** — single-threaded, MSAA off, shadows off, GL backend — nothing helps.
 - **Bevy 0.19-dev Vulkan works** on Mali-G77 but has a PBR cluster bindings bug (`unwrap()` on `None` at `mesh_view_bindings.rs:727`). We patched this locally with `continue` instead of `unwrap()` at `C:\Repositories\Rust\bevy\crates\bevy_pbr\src\render\mesh_view_bindings.rs`.
