@@ -1,0 +1,18 @@
+[workspace]
+members = ["my_bevy_game"]
+resolver = "2"
+
+# Fast iteration in debug: your code gets opt-level 1, dependencies get 3.
+# This keeps compile times low while dependencies run at full speed.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Release: full optimisation + link-time optimisation.
+[profile.release]
+opt-level = 3
+lto = true
+strip = "symbols"
+codegen-units = 1

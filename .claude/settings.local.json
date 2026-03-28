@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:bevy.org)",
+      "Bash(ls -la \"c:\\\\Repositories\\\\Rust\\\\rust-bevy-example\\\\flutter_rust_wrap\\\\windows\"\" 2>/dev/null || echo \"Directory might not exist \")"
+    ]
+  }
+}

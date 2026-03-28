@@ -1,0 +1,58 @@
+[package]
+name = "my_bevy_game"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "my_bevy_game"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "my_bevy_game_bin"
+path = "src/main.rs"
+
+[dependencies]
+bevy = { version = "0.18.1", default-features = false, features = [
+    # 3-D rendering
+    "bevy_pbr",
+    "bevy_core_pipeline",
+    "bevy_render",
+    "bevy_camera",
+    "bevy_image",
+    "bevy_mesh",
+    "bevy_light",
+    # UI + text
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_text",
+    "default_font",
+    # Window / input (bevy_diagnostic and bevy_input are always included, not features)
+    "bevy_winit",
+    "bevy_window",
+    # Asset pipeline
+    "bevy_asset",
+    # Threading
+    "multi_threaded",
+    # Minimal image support (PNG for textures/font atlas)
+    "png",
+    # Web renderer
+    "webgl2",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { version = "0.18.1", default-features = false, features = ["android-game-activity"] }
+
+[package.metadata.android]
+package = "com.example.mybevygame"
+label = "My Bevy Game"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 23
+target_sdk_version = 35
+
+[package.metadata.android.signing.release]
+path = "C:/Users/worc1/.android/debug.keystore"
+keystore_password = "android"
+key_alias = "androiddebugkey"
+key_password = "android"
