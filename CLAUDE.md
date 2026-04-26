@@ -12,6 +12,31 @@ This project targets **all four platforms** and must be kept working on all of t
 - `bevy_ffi/` — headless Bevy rendered to a pixel buffer, exposed as a C FFI cdylib for embedding (not in workspace currently)
 - `flutter_rust_wrap/` — Flutter Windows app that embeds `bevy_ffi` via a texture plugin
 
+## Architecture (4 layers — STRICT)
+
+> **Full reference:** [docsai/architecture.md](docsai/architecture.md)
+> **Enforcement:** [.claude/skills/architecture/SKILL.md](.claude/skills/architecture/SKILL.md) — invoke when adding/modifying gameplay or visuals.
+
+`my_bevy_game/src/` is split into four directories, layered as a strict
+data pipeline. Each layer may only depend on the layers below it.
+
+1. **`data/`** — components, resources, intents (events). No systems
+   beyond `add_message`/`insert_resource`. No render types.
+2. **`server/`** — game logic; the source of truth. Reads intents,
+   mutates `Transform`. **NO render references** (`Mesh3d`, `Camera3d`,
+   `Color`, `Node`, etc. are forbidden here).
+3. **`client_sim/`** — input → intents, view-model state
+   (`DesiredCameraView`). NO render references. Headless-testable.
+4. **`render/`** — `Mesh3d`, `Camera3d`, materials, UI. The only layer
+   allowed to touch render types.
+
+Per-frame data flow: input → `MoveIntent` (client_sim) → `Player.Transform`
+mutation (server) → `DesiredCameraView` (client_sim) → `Camera3d.Transform`
+(render).
+
+When adding a feature, ask: "where does the data live?" and "where do
+visuals attach?" — and put each piece in the appropriate layer.
+
 ## Build Commands
 - **Windows:** `cargo run --bin my_bevy_game_bin` / `cargo run --bin my_bevy_game_bin --release`
 - **Android APK (PowerShell):**
@@ -45,7 +70,7 @@ This project targets **all four platforms** and must be kept working on all of t
 
 ### Bevy version: must use local 0.19-dev, NOT published 0.18.1
 - **Bevy 0.18.1 + Mali-G77 = SIGSEGV** in `wgpu_hal::vulkan::command::CommandEncoder::begin_encoding` during `queue_submit`. This is a wgpu Vulkan bug fixed in newer wgpu (shipped in Bevy 0.19-dev). **No workaround exists** — single-threaded, MSAA off, shadows off, GL backend — nothing helps.
-- **Bevy 0.19-dev Vulkan works** on Mali-G77 but has a PBR cluster bindings bug (`unwrap()` on `None` at `mesh_view_bindings.rs:727`). We patched this locally with `continue` instead of `unwrap()` at `C:\Repositories\Rust\bevy\crates\bevy_pbr\src\render\mesh_view_bindings.rs`.
+- **Bevy 0.19-dev Vulkan works** on Mali-G77 but has a PBR cluster bindings bug (`unwrap()` on `None` at `mesh_view_bindings.rs:727`). Two-part patch in `C:/Repositories/Rust/bevy/crates/bevy_pbr/src/cluster/mod.rs`: (a) `push_raw_index` Storage variant calls `.add()` instead of `error!()`; (b) `write_buffers` Storage variant calls `.add()` once if the buffer is empty (covers directional-light-only scenes, where `push_raw_index` is never called). Without (b), the crash returns. Full details in [docsai/android-debugging-log.md](docsai/android-debugging-log.md) section 10.
 - The dependency uses `path = "C:/Repositories/Rust/bevy"` pointing to local Bevy 0.19-dev.
 
 ### Feature flags that matter
@@ -99,3 +124,7 @@ Msaa::Off,
 - [x] Android APK running on Mali-G77 — patched Bevy 0.19-dev PBR cluster bindings, Vulkan rendering working, no SIGSEGV
 - [x] iOS Xcode project setup — `my_bevy_game.xcodeproj`, `build_rust_deps.sh` (multi-arch lipo), `Info.plist`, iOS Window settings (status bar hidden, home indicator hidden, rotation gesture)
 - [x] UI overlay working on Bevy 0.19-dev — required `bevy_ui_render` + `bevy_sprite_render` features, `WinitSettings::game()` on desktop, windowed mode on desktop via `#[cfg]`
+- [x] 4-layer architecture refactor — split `my_bevy_game/src/` into `data/`, `server/`, `client_sim/`, `render/`. FBM heightmap world + WASD-controlled billboard player. Architecture skill at `.claude/skills/architecture/SKILL.md` and full doc at `docsai/architecture.md`.
+- [x] Camera with inertia + Q/E orbit + click-to-move + 5 player face/profile views — angle-and-focus smoothing in `client_sim` (camera always stays on the orbit arc), camera-relative WASD, `Camera::viewport_to_world` raycast for click/tap, settings panel in `render/settings_ui.rs`. Player slab swaps between 5 mesh+material variants (face, front-side, side, back-side, back) by `dot(facing, player→camera)`.
+- [x] Comprehensive 0.19-dev pitfalls doc — [docsai/bevy-ui-lessons.md](docsai/bevy-ui-lessons.md) covers feature flags (`bevy_ui_render`/`bevy_sprite_render`), API renames (`AmbientLight`→`GlobalAmbientLight`, `ChildBuilder`→`ChildSpawnerCommands`, `Event`→`Message`, `shadows_enabled`→`shadow_maps_enabled`, `font_size: f32`→`FontSize::Px`), Windows build issues (`windows` crate version conflict, rust-analyzer file lock), and camera smoothing pitfalls (linear position lerp ≠ orbital arc).
+- [x] Auto-replication infrastructure — `Replicated` trait + `Replicate` marker + `ServerReplicatePlugin<T>`. Change detection (`Added<T>`, `Changed<T>`, `RemovedComponents<T>`) drives delta collection in `PostUpdate`. Game code stays untouched: a component opts in by deriving `Serialize/Deserialize` + adding a `TYPE_ID`; an entity opts in by adding `Replicate`. Stage-1 flushes a per-second summary to logs; transport will replace `flush_outbox` later.

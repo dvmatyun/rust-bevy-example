@@ -148,7 +148,7 @@ commands.spawn((
 6. The `Storage` arm just logged `error!(...)` instead of writing data
 7. Empty buffer → `binding()` returns `None` → PBR pipeline can't create bind groups → nothing renders
 
-**Fix:** Patched `push_raw_index()` in `bevy/crates/bevy_pbr/src/cluster/mod.rs` (line ~660):
+**Fix (part 1 — incomplete):** Patched `push_raw_index()` in `bevy/crates/bevy_pbr/src/cluster/mod.rs` (line ~660):
 
 ```rust
 // BEFORE (broken):
@@ -161,13 +161,35 @@ ViewClusterBuffers::Storage {
     clusterable_object_index_lists,
     ..
 } => {
-    // CPU clustering fallback with storage buffers — allocate space so
-    // the buffer exists and binding() returns Some.
     clusterable_object_index_lists.add();
 }
 ```
 
-This allocates buffer space (via `UninitBufferVec::add()`) so the GPU buffer gets created during `write_buffer()`, making `binding()` return `Some`, allowing the PBR pipeline to proceed.
+This allocates buffer space when `push_raw_index()` is called.
+
+**Fix (part 2 — required for directional-light-only scenes):** The patch above only helps when there's at least one clusterable object (point light, spot light, or decal). Scenes with **only `DirectionalLight`** (very common) never call `push_raw_index()` → buffer stays empty after `clear()` → same `unwrap()` crash.
+
+Patch `write_buffers()` in the same file (line ~735) to ensure the storage buffer is allocated even if no objects were pushed:
+
+```rust
+ViewClusterBuffers::Storage {
+    clusterable_object_index_lists,
+    cluster_offsets_and_counts,
+} => {
+    // CPU clustering fallback (e.g. Mali-G77) on storage-buffer
+    // hardware: ensure the buffer has at least one slot so its
+    // GPU resource is created and `binding()` returns `Some`,
+    // even when the scene has only directional lights (no
+    // point/spot lights or decals → push_raw_index never fires).
+    if clusterable_object_index_lists.is_empty() {
+        clusterable_object_index_lists.add();
+    }
+    clusterable_object_index_lists.write_buffer(render_device);
+    cluster_offsets_and_counts.write_buffer(render_device, render_queue);
+}
+```
+
+This is the canonical fix — works regardless of which clusterable objects are in the scene.
 
 ---
 

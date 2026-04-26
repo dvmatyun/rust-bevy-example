@@ -40,11 +40,16 @@ features = [
   "ktx2",
   "multi_threaded",
   "png",
+  "serialize", # gives Vec2/Vec3/Quat/Transform serde derives
   "tonemapping_luts",
   "touch",
   "webgl2",
   "zstd_rust",
 ]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
 
 [package.metadata.android]
 package = "com.example.mybevygame"

@@ -41,6 +41,18 @@
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
     },
 
+    {
+      "label": "Windows: Stop game",
+      "type": "shell",
+      "command": "taskkill",
+      "args": ["/F", "/IM", "my_bevy_game_bin.exe"],
+      "windows": {
+        "options": { "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] } }
+      },
+      "presentation": { "reveal": "silent", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+
     // ========================================================================
     // Android (cargo-apk)
     // ========================================================================
