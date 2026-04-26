@@ -1,0 +1,162 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ========================================================================
+    // Windows
+    // ========================================================================
+    {
+      "label": "Windows: Build (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--bin", "my_bevy_game_bin"],
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Windows: Build (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--bin", "my_bevy_game_bin", "--release"],
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Windows: Run (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "--bin", "my_bevy_game_bin"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Windows: Run (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "--bin", "my_bevy_game_bin", "--release"],
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+
+    // ========================================================================
+    // Android (cargo-apk)
+    // ========================================================================
+    {
+      "label": "Android: Build APK (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["apk", "build", "-p", "my_bevy_game", "--lib"],
+      "options": {
+        "env": {
+          "ANDROID_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk",
+          "NDK_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk/ndk/28.0.12916984"
+        }
+      },
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Android: Build APK (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["apk", "build", "-p", "my_bevy_game", "--lib", "--release"],
+      "options": {
+        "env": {
+          "ANDROID_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk",
+          "NDK_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk/ndk/28.0.12916984"
+        }
+      },
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Android: Install + Launch on device",
+      "type": "shell",
+      "command": "adb",
+      "args": [
+        "install",
+        "-r",
+        "${workspaceFolder}/target/release/apk/my_bevy_game.apk"
+      ],
+      "group": "test",
+      "dependsOn": "Android: Build APK (release)",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Android: Launch (already installed)",
+      "type": "shell",
+      "command": "adb",
+      "args": [
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "com.example.mybevygame/android.app.NativeActivity"
+      ],
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "Android: Logcat",
+      "type": "shell",
+      "command": "adb",
+      "args": ["logcat", "-s", "RustStdoutStderr:V", "AndroidRuntime:E", "*:F"],
+      "group": "test",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": false }
+    },
+
+    // ========================================================================
+    // iOS (only works on macOS — needs Xcode + signing)
+    // ========================================================================
+    {
+      "label": "iOS: Build for device (release, macOS only)",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "-project",
+        "my_bevy_game/my_bevy_game.xcodeproj",
+        "-scheme",
+        "my_bevy_game",
+        "-configuration",
+        "Release",
+        "-destination",
+        "generic/platform=iOS",
+        "build"
+      ],
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "iOS: Build for simulator (debug, macOS only)",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "-project",
+        "my_bevy_game/my_bevy_game.xcodeproj",
+        "-scheme",
+        "my_bevy_game",
+        "-configuration",
+        "Debug",
+        "-destination",
+        "generic/platform=iOS Simulator",
+        "build"
+      ],
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "iOS: Open Xcode project (macOS only)",
+      "type": "shell",
+      "command": "open",
+      "args": ["my_bevy_game/my_bevy_game.xcodeproj"],
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    }
+  ]
+}

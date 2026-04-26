@@ -1,56 +1,69 @@
-//! 3D scene with orbiting cubes, FPS HUD, and cube count controls.
-//! Android Mali-G77 and iOS compatible.
+//! Voxel terrain demo: Minecraft-style heightmap world with a billboard
+//! player rectangle controlled by WASD.
+//!
+//! Architecture: each domain owns a `Plugin`. Terrain generation uses
+//! hash-based 2D value noise with FBM (no extra crate dependencies).
 
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    window::{AppLifecycle, WindowMode},
+    window::AppLifecycle,
     winit::WinitSettings,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use bevy::window::WindowMode;
 
-const GOLDEN_ANGLE: f32 = 2.399_963;
+// === World tuning ===========================================================
+const WORLD_SIZE: i32 = 64;       // 64x64 columns of voxel blocks
+const NOISE_SCALE: f32 = 0.08;    // smaller = larger features
+const HEIGHT_SCALE: f32 = 9.0;    // peak height in blocks
+const PLAYER_SPEED: f32 = 8.0;
+const PLAYER_HALF_HEIGHT: f32 = 0.7;
+const CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 14.0, 14.0);
 
-const BTN_NORMAL: Color = Color::srgb(0.20, 0.20, 0.40);
-const BTN_HOVER: Color = Color::srgb(0.28, 0.28, 0.52);
-const BTN_PRESS: Color = Color::srgb(0.35, 0.35, 0.65);
-
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Components
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 #[derive(Component)]
-struct OrbitingCube {
-    radius: f32,
-    speed: f32,
-    angle_offset: f32,
-    /// Inclination from the XZ plane — tilts the orbit so cubes move through Y.
-    inclination: f32,
-}
+struct Player;
 
 #[derive(Component)]
-enum ButtonAction {
-    Add(i32),
-    Sub(i32),
-}
+struct GameCamera;
+
+#[derive(Component)]
+struct TerrainBlock;
 
 #[derive(Component)]
 struct HudText;
 
-#[derive(Component)]
-struct CubeCountLabel;
-
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Resources
-// ---------------------------------------------------------------------------
+// ============================================================================
 
+/// Precomputed surface height for every world column.
 #[derive(Resource)]
-struct CubeCount {
-    target: i32,
-    next_index: u32,
+struct TerrainHeights {
+    /// Row-major: heights[(z + half) * size + (x + half)]
+    cells: Vec<i32>,
 }
 
-#[derive(Resource)]
-struct CubeMesh(Handle<Mesh>);
+impl TerrainHeights {
+    fn at(&self, x: i32, z: i32) -> i32 {
+        let half = WORLD_SIZE / 2;
+        let lx = (x + half).clamp(0, WORLD_SIZE - 1) as usize;
+        let lz = (z + half).clamp(0, WORLD_SIZE - 1) as usize;
+        self.cells[lz * WORLD_SIZE as usize + lx]
+    }
+
+    /// World-space Y of the top of the surface block at this XZ.
+    fn ground_y(&self, world_x: f32, world_z: f32) -> f32 {
+        let xi = world_x.round() as i32;
+        let zi = world_z.round() as i32;
+        // Block centred at y=h, top face at y=h+0.5
+        self.at(xi, zi) as f32 + 0.5
+    }
+}
 
 #[derive(Resource)]
 struct FrameTimeHistory {
@@ -91,69 +104,295 @@ impl FrameTimeHistory {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Colour palette
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Plugins
+// ============================================================================
 
-fn cube_color(index: usize) -> Color {
-    match index % 8 {
-        0 => Color::srgb(1.0, 0.3, 0.3),
-        1 => Color::srgb(1.0, 0.7, 0.2),
-        2 => Color::srgb(0.3, 1.0, 0.3),
-        3 => Color::srgb(0.2, 0.8, 1.0),
-        4 => Color::srgb(0.6, 0.3, 1.0),
-        5 => Color::srgb(1.0, 0.3, 0.9),
-        6 => Color::srgb(1.0, 0.6, 0.1),
-        _ => Color::srgb(0.5, 1.0, 0.5),
+struct TerrainPlugin;
+impl Plugin for TerrainPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(ClearColor(Color::srgb(0.55, 0.75, 0.92)))
+            .insert_resource(GlobalAmbientLight {
+                color: Color::WHITE,
+                brightness: 250.0,
+                ..default()
+            })
+            .add_systems(Startup, setup_terrain);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Systems
-// ---------------------------------------------------------------------------
+struct PlayerPlugin;
+impl Plugin for PlayerPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, spawn_player)
+            .add_systems(
+                Update,
+                (player_input, snap_to_ground, billboard_player).chain(),
+            );
+    }
+}
 
-fn setup_scene(
+struct CameraFollowPlugin;
+impl Plugin for CameraFollowPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, spawn_camera)
+            .add_systems(Update, follow_player);
+    }
+}
+
+struct HudPlugin;
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(FrameTimeDiagnosticsPlugin {
+            max_history_length: 120,
+            ..default()
+        })
+        .insert_resource(FrameTimeHistory::new(120))
+        .add_systems(Startup, spawn_hud)
+        .add_systems(Update, (record_frame_time, update_hud));
+    }
+}
+
+// ============================================================================
+// Terrain
+// ============================================================================
+
+fn setup_terrain(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Ground plane
+    // Sun
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(12.0, 12.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.25, 0.45, 0.25))),
-    ));
-
-    // Light — NO shadows on Android (segfault on Mali)
-    commands.spawn((
-        PointLight {
-            intensity: 1_000_000.0,
+        DirectionalLight {
+            illuminance: 6000.0,
             #[cfg(not(target_os = "android"))]
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(4.0, 8.0, 4.0),
+        Transform::from_xyz(40.0, 80.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    // Camera — MSAA off on Android (Vulkan panic on Mali)
+    let cube_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+
+    // Height-band materials (Minecraft-ish biomes by elevation)
+    let mat_water = materials.add(Color::srgb(0.20, 0.40, 0.85));
+    let mat_sand = materials.add(Color::srgb(0.85, 0.78, 0.45));
+    let mat_grass = materials.add(Color::srgb(0.30, 0.65, 0.25));
+    let mat_rock = materials.add(Color::srgb(0.45, 0.40, 0.35));
+    let mat_snow = materials.add(Color::srgb(0.95, 0.95, 0.97));
+
+    let half = WORLD_SIZE / 2;
+    let mut cells = vec![0i32; (WORLD_SIZE * WORLD_SIZE) as usize];
+
+    for z in 0..WORLD_SIZE {
+        for x in 0..WORLD_SIZE {
+            let wx = x - half;
+            let wz = z - half;
+            let h = terrain_height_at(wx, wz);
+            cells[(z * WORLD_SIZE + x) as usize] = h;
+
+            let mat = if h <= 0 {
+                mat_water.clone()
+            } else if h <= 1 {
+                mat_sand.clone()
+            } else if h <= 4 {
+                mat_grass.clone()
+            } else if h <= 6 {
+                mat_rock.clone()
+            } else {
+                mat_snow.clone()
+            };
+
+            commands.spawn((
+                Mesh3d(cube_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(wx as f32, h as f32, wz as f32),
+                TerrainBlock,
+            ));
+        }
+    }
+
+    commands.insert_resource(TerrainHeights { cells });
+}
+
+fn terrain_height_at(x: i32, z: i32) -> i32 {
+    // FBM in [0,1] roughly; centre and scale to a signed integer height.
+    let n = fbm(x as f32 * NOISE_SCALE, z as f32 * NOISE_SCALE);
+    ((n - 0.3) * HEIGHT_SCALE).round() as i32
+}
+
+// === Hash-based value noise (deterministic, no extra deps) ==================
+
+fn hash2(x: i32, z: i32) -> f32 {
+    let mut h = (x as u32)
+        .wrapping_mul(374761393)
+        .wrapping_add((z as u32).wrapping_mul(668265263));
+    h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+    h ^= h >> 16;
+    (h as f32) / (u32::MAX as f32)
+}
+
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn value_noise(x: f32, z: f32) -> f32 {
+    let xi = x.floor() as i32;
+    let zi = z.floor() as i32;
+    let u = smoothstep(x - xi as f32);
+    let v = smoothstep(z - zi as f32);
+    let n00 = hash2(xi, zi);
+    let n10 = hash2(xi + 1, zi);
+    let n01 = hash2(xi, zi + 1);
+    let n11 = hash2(xi + 1, zi + 1);
+    let a = n00 * (1.0 - u) + n10 * u;
+    let b = n01 * (1.0 - u) + n11 * u;
+    a * (1.0 - v) + b * v
+}
+
+/// Fractional Brownian motion: stack 4 octaves of value noise.
+fn fbm(x: f32, z: f32) -> f32 {
+    let mut total = 0.0;
+    let mut amp = 1.0;
+    let mut freq = 1.0;
+    let mut max_amp = 0.0;
+    for _ in 0..4 {
+        total += value_noise(x * freq, z * freq) * amp;
+        max_amp += amp;
+        amp *= 0.5;
+        freq *= 2.0;
+    }
+    total / max_amp
+}
+
+// ============================================================================
+// Player
+// ============================================================================
+
+fn spawn_player(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // Thin upright slab — reads as a 2D rectangle in the 3D world.
+    // `unlit` keeps the colour vivid regardless of lighting.
+    let mesh = meshes.add(Cuboid::new(0.8, 1.4, 0.05));
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.95, 0.30, 0.20),
+        unlit: true,
+        cull_mode: None, // visible from both sides
+        ..default()
+    });
+
+    commands.spawn((
+        Mesh3d(mesh),
+        MeshMaterial3d(material),
+        // Spawn high; snap_to_ground places it on the surface next frame.
+        Transform::from_xyz(0.0, HEIGHT_SCALE + 5.0, 0.0),
+        Player,
+    ));
+}
+
+fn player_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut q: Query<&mut Transform, With<Player>>,
+) {
+    let mut dir = Vec3::ZERO;
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+        dir.z -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+        dir.z += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+        dir.x -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        dir.x += 1.0;
+    }
+    if dir == Vec3::ZERO {
+        return;
+    }
+    let dir = dir.normalize();
+    let bound = (WORLD_SIZE / 2 - 1) as f32;
+    let dt = time.delta_secs();
+    for mut tf in &mut q {
+        tf.translation.x =
+            (tf.translation.x + dir.x * PLAYER_SPEED * dt).clamp(-bound, bound);
+        tf.translation.z =
+            (tf.translation.z + dir.z * PLAYER_SPEED * dt).clamp(-bound, bound);
+    }
+}
+
+fn snap_to_ground(
+    terrain: Option<Res<TerrainHeights>>,
+    mut q: Query<&mut Transform, With<Player>>,
+) {
+    let Some(terrain) = terrain else { return };
+    for mut tf in &mut q {
+        tf.translation.y =
+            terrain.ground_y(tf.translation.x, tf.translation.z) + PLAYER_HALF_HEIGHT;
+    }
+}
+
+/// Rotate the player slab around Y so its flat face is always toward the
+/// camera — the "2D sprite in a 3D world" effect.
+fn billboard_player(
+    cam_q: Query<&Transform, (With<GameCamera>, Without<Player>)>,
+    mut player_q: Query<&mut Transform, With<Player>>,
+) {
+    let Ok(cam_tf) = cam_q.single() else { return };
+    for mut tf in &mut player_q {
+        let to_cam = cam_tf.translation - tf.translation;
+        let yaw = to_cam.x.atan2(to_cam.z);
+        tf.rotation = Quat::from_rotation_y(yaw);
+    }
+}
+
+// ============================================================================
+// Camera
+// ============================================================================
+
+fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 8.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(CAMERA_OFFSET).looking_at(Vec3::ZERO, Vec3::Y),
+        GameCamera,
         #[cfg(target_os = "android")]
         Msaa::Off,
     ));
+}
 
-    // Shared cube mesh
-    commands.insert_resource(CubeMesh(meshes.add(Cuboid::new(0.6, 0.6, 0.6))));
+/// Smooth third-person follow: lerp toward `player + offset`, then look at
+/// the player.
+fn follow_player(
+    time: Res<Time>,
+    player_q: Query<&Transform, (With<Player>, Without<GameCamera>)>,
+    mut cam_q: Query<&mut Transform, With<GameCamera>>,
+) {
+    let Ok(player_tf) = player_q.single() else {
+        return;
+    };
+    let Ok(mut cam_tf) = cam_q.single_mut() else {
+        return;
+    };
+    let target = player_tf.translation + CAMERA_OFFSET;
+    let t = (time.delta_secs() * 6.0).min(1.0);
+    cam_tf.translation = cam_tf.translation.lerp(target, t);
+    let look = cam_tf.looking_at(player_tf.translation, Vec3::Y);
+    cam_tf.rotation = look.rotation;
+}
 
-    // ── UI ───────────────────────────────────────────────────────────────
-    // Safe-area padding: Bevy 0.19-dev has no safe-area API, so we use
-    // generous fixed insets that cover status bars, notches, and home
-    // indicators on common devices.
-    let safe_top = Val::Px(48.0);    // status bar + notch
-    let safe_bottom = Val::Px(66.0);  // home indicator / nav bar + 32px extra
-    let safe_side = Val::Px(20.0);    // minimum side padding
+// ============================================================================
+// HUD
+// ============================================================================
 
-    // HUD text (top, respects safe area, constrained to screen width)
+fn spawn_hud(mut commands: Commands) {
+    let safe_top = Val::Px(48.0);
+    let safe_side = Val::Px(20.0);
+
     commands
         .spawn((
             Node {
@@ -175,165 +414,6 @@ fn setup_scene(
             TextColor(Color::WHITE),
             HudText,
         ));
-
-    // Button bar (bottom, wraps to next line if it doesn't fit)
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: safe_bottom,
-                left: safe_side,
-                right: safe_side,
-                flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::Wrap,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(6.0),
-                row_gap: Val::Px(6.0),
-                ..default()
-            },
-        ))
-        .with_children(|bar| {
-            for (label, action) in [
-                ("-1000", ButtonAction::Sub(1000)),
-                ("-50", ButtonAction::Sub(50)),
-                ("-1", ButtonAction::Sub(1)),
-            ] {
-                spawn_button(bar, label, action);
-            }
-
-            // Cube count label
-            bar.spawn((
-                Node {
-                    min_width: Val::Px(90.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-            ))
-            .with_child((
-                Text::new("Cubes: 6"),
-                TextFont {
-                    font_size: FontSize::Px(18.0),
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-                CubeCountLabel,
-            ));
-
-            for (label, action) in [
-                ("+1", ButtonAction::Add(1)),
-                ("+50", ButtonAction::Add(50)),
-                ("+1000", ButtonAction::Add(1000)),
-            ] {
-                spawn_button(bar, label, action);
-            }
-        });
-}
-
-fn spawn_button(parent: &mut ChildSpawnerCommands, label: &str, action: ButtonAction) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                ..default()
-            },
-            BackgroundColor(BTN_NORMAL),
-            action,
-        ))
-        .with_child((
-            Text::new(label),
-            TextFont {
-                font_size: FontSize::Px(18.0),
-                ..default()
-            },
-            TextColor(Color::WHITE),
-        ));
-}
-
-fn orbit_cubes(time: Res<Time>, mut query: Query<(&OrbitingCube, &mut Transform)>) {
-    for (orbit, mut transform) in &mut query {
-        let angle = time.elapsed_secs() * orbit.speed + orbit.angle_offset;
-        // Spherical orbit: inclination tilts the circular path so each cube
-        // sweeps a unique great-circle on a sphere, using all three axes.
-        let x = angle.cos() * orbit.radius;
-        let flat_z = angle.sin() * orbit.radius;
-        let y = flat_z * orbit.inclination.sin() + 0.5;
-        let z = flat_z * orbit.inclination.cos();
-        transform.translation = Vec3::new(x, y.abs(), z);
-        transform.rotation = Quat::from_rotation_y(angle * 2.0);
-    }
-}
-
-fn sync_cube_count(
-    mut commands: Commands,
-    cube_mesh: Res<CubeMesh>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut cube_count: ResMut<CubeCount>,
-    cubes: Query<Entity, With<OrbitingCube>>,
-) {
-    let current = cubes.iter().count() as i32;
-    let target = cube_count.target;
-
-    if current == target {
-        return;
-    }
-
-    if current < target {
-        for _ in 0..(target - current) {
-            let idx = cube_count.next_index;
-            cube_count.next_index += 1;
-            let radius = 3.0 + (idx as f32 * 0.05).sin() * 1.5;
-            let speed = 1.0 + (idx as f32 * 0.3).cos() * 0.5;
-            // Golden-angle based inclination gives each cube a unique orbital tilt
-            let inclination = (idx as f32 * GOLDEN_ANGLE * 0.7).sin() * 1.2;
-            commands.spawn((
-                Mesh3d(cube_mesh.0.clone()),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: cube_color(idx as usize),
-                    ..default()
-                })),
-                Transform::default(),
-                OrbitingCube {
-                    radius,
-                    speed,
-                    angle_offset: idx as f32 * GOLDEN_ANGLE,
-                    inclination,
-                },
-            ));
-        }
-    } else {
-        let to_remove = (current - target) as usize;
-        for entity in cubes.iter().take(to_remove) {
-            commands.entity(entity).despawn();
-        }
-    }
-}
-
-fn button_system(
-    mut interaction_query: Query<
-        (&Interaction, &ButtonAction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>),
-    >,
-    mut cube_count: ResMut<CubeCount>,
-) {
-    for (interaction, action, mut bg) in &mut interaction_query {
-        match interaction {
-            Interaction::Pressed => {
-                *bg = BackgroundColor(BTN_PRESS);
-                let delta = match action {
-                    ButtonAction::Add(n) => *n,
-                    ButtonAction::Sub(n) => -(*n),
-                };
-                cube_count.target = (cube_count.target + delta).max(0);
-            }
-            Interaction::Hovered => *bg = BackgroundColor(BTN_HOVER),
-            Interaction::None => *bg = BackgroundColor(BTN_NORMAL),
-        }
-    }
 }
 
 fn record_frame_time(time: Res<Time>, mut history: ResMut<FrameTimeHistory>) {
@@ -343,10 +423,7 @@ fn record_frame_time(time: Res<Time>, mut history: ResMut<FrameTimeHistory>) {
 fn update_hud(
     diagnostics: Res<DiagnosticsStore>,
     history: Res<FrameTimeHistory>,
-    mut hud_query: Query<&mut Text, With<HudText>>,
-    mut label_query: Query<&mut Text, (With<CubeCountLabel>, Without<HudText>)>,
-    cubes: Query<(), With<OrbitingCube>>,
-    cube_count: Res<CubeCount>,
+    mut q: Query<&mut Text, With<HudText>>,
 ) {
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -357,91 +434,18 @@ fn update_hud(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0)
         * 1000.0;
-
-    let avg_fps = history.avg_fps();
-    let one_pct_low = history.one_pct_low_fps();
-    let cube_actual = cubes.iter().count();
-
-    for mut text in &mut hud_query {
+    let avg = history.avg_fps();
+    let one_pct = history.one_pct_low_fps();
+    for mut text in &mut q {
         *text = Text::new(format!(
-            "FPS {fps:.0}  Avg {avg_fps:.0}  1%Low {one_pct_low:.0}  |  {frame_ms:.2}ms  |  Cubes {cube_actual}"
+            "FPS {fps:.0}  Avg {avg:.0}  1%Low {one_pct:.0}  |  {frame_ms:.2}ms  |  WASD to move"
         ));
     }
-    for mut text in &mut label_query {
-        *text = Text::new(format!("Cubes: {}", cube_count.target));
-    }
 }
 
-/// Touch camera controls (works on both Android and iOS):
-/// - 1-finger drag: orbit camera around the origin
-/// - 2-finger pinch: zoom in/out (distance between fingers)
-fn touch_camera(
-    touches: Res<Touches>,
-    mut camera_transform: Single<&mut Transform, With<Camera3d>>,
-    mut last_orbit_pos: Local<Option<Vec2>>,
-    mut last_pinch_dist: Local<Option<f32>>,
-) {
-    let pressed: Vec<&bevy::input::touch::Touch> = touches.iter().collect();
-
-    match pressed.len() {
-        1 => {
-            // Single finger: orbit
-            *last_pinch_dist = None;
-            let finger = pressed[0];
-            let pos = finger.position();
-            if let Some(last) = *last_orbit_pos {
-                let delta = pos - last;
-                if delta.length() > 0.5 {
-                    let dist = camera_transform.translation.length();
-                    let (mut azimuth, mut elevation) =
-                        camera_spherical(&camera_transform);
-                    azimuth -= delta.x * 0.008;
-                    elevation = (elevation - delta.y * 0.005).clamp(0.15, 1.4);
-                    camera_transform.translation = Vec3::new(
-                        dist * elevation.sin() * azimuth.sin(),
-                        dist * elevation.cos(),
-                        dist * elevation.sin() * azimuth.cos(),
-                    );
-                    **camera_transform =
-                        camera_transform.looking_at(Vec3::ZERO, Vec3::Y);
-                }
-            }
-            *last_orbit_pos = Some(pos);
-        }
-        2 => {
-            // Two fingers: pinch to zoom
-            *last_orbit_pos = None;
-            let a = pressed[0].position();
-            let b = pressed[1].position();
-            let current_dist = a.distance(b);
-
-            if let Some(prev_dist) = *last_pinch_dist {
-                if prev_dist > 1.0 {
-                    let scale = prev_dist / current_dist; // >1 = zoom out, <1 = zoom in
-                    let cam_dist = camera_transform.translation.length();
-                    let new_dist = (cam_dist * scale).clamp(3.0, 30.0);
-                    camera_transform.translation =
-                        camera_transform.translation.normalize() * new_dist;
-                }
-            }
-            *last_pinch_dist = Some(current_dist);
-        }
-        _ => {
-            // No fingers or 3+: reset tracking
-            *last_orbit_pos = None;
-            *last_pinch_dist = None;
-        }
-    }
-}
-
-/// Extract spherical angles (azimuth, elevation) from camera position.
-fn camera_spherical(transform: &Transform) -> (f32, f32) {
-    let p = transform.translation;
-    let dist = p.length();
-    let elevation = (p.y / dist).acos();
-    let azimuth = p.x.atan2(p.z);
-    (azimuth, elevation)
-}
+// ============================================================================
+// Lifecycle / window settings
+// ============================================================================
 
 fn handle_lifetime(mut events: MessageReader<AppLifecycle>) {
     for _e in events.read() {}
@@ -449,9 +453,13 @@ fn handle_lifetime(mut events: MessageReader<AppLifecycle>) {
 
 fn winit_settings() -> WinitSettings {
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    { WinitSettings::mobile() }
+    {
+        WinitSettings::mobile()
+    }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    { WinitSettings::game() }
+    {
+        WinitSettings::game()
+    }
 }
 
 fn window_settings() -> Window {
@@ -475,9 +483,9 @@ fn window_settings() -> Window {
     }
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Entry point
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 #[bevy_main]
 pub fn main() {
@@ -487,29 +495,12 @@ pub fn main() {
                 primary_window: Some(window_settings()),
                 ..default()
             }),
-            FrameTimeDiagnosticsPlugin {
-                max_history_length: 120,
-                ..default()
-            },
+            TerrainPlugin,
+            CameraFollowPlugin,
+            PlayerPlugin,
+            HudPlugin,
         ))
         .insert_resource(winit_settings())
-        .insert_resource(CubeCount {
-            target: 6,
-            next_index: 0,
-        })
-        .insert_resource(FrameTimeHistory::new(120))
-        .add_systems(Startup, setup_scene)
-        .add_systems(
-            Update,
-            (
-                orbit_cubes,
-                sync_cube_count,
-                button_system,
-                record_frame_time,
-                update_hud,
-                touch_camera,
-                handle_lifetime,
-            ),
-        )
+        .add_systems(Update, handle_lifetime)
         .run();
 }
