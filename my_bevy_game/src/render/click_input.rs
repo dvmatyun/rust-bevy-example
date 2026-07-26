@@ -8,7 +8,7 @@
 
 use bevy::prelude::*;
 
-use crate::data::{ClickMoveIntent, GameCamera, Settings, TerrainHeights, joystick_layout};
+use crate::data::{terrain_gen, ClickMoveIntent, GameCamera, Settings, WorldConfig, joystick_layout};
 
 /// Maximum march distance in world units. Camera is typically ≤ 30
 /// units away from any terrain cell, so 200 is a generous bound.
@@ -19,7 +19,7 @@ pub fn handle_click_input(
     touches: Res<Touches>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
-    heights: Res<TerrainHeights>,
+    config: Res<WorldConfig>,
     settings: Res<Settings>,
     mut writer: MessageWriter<ClickMoveIntent>,
 ) {
@@ -53,7 +53,7 @@ pub fn handle_click_input(
         return;
     }
 
-    let Ok((camera, cam_tf)) = cameras.single() else {
+    let Some((camera, cam_tf)) = cameras.iter().next() else {
         return;
     };
 
@@ -64,7 +64,7 @@ pub fn handle_click_input(
         // Ray-march against the actual heightmap so a click on a hill
         // lands on the hill's surface (not far behind it on a flat
         // y = 0 projection).
-        if let Some(hit) = heights.raycast(ray, MAX_RAY_DISTANCE) {
+        if let Some(hit) = terrain_gen::terrain_raycast(ray, MAX_RAY_DISTANCE, &config) {
             writer.write(ClickMoveIntent {
                 target: Vec2::new(hit.x, hit.z),
             });

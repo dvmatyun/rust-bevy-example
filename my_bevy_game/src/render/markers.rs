@@ -8,7 +8,7 @@
 
 use bevy::prelude::*;
 
-use crate::data::{ClickMoveIntent, MoveTarget, TerrainHeights};
+use crate::data::{terrain_gen, ClickMoveIntent, MoveTarget, WorldConfig};
 
 const TAP_TTL: f32 = 0.5;
 
@@ -60,13 +60,13 @@ pub(crate) fn spawn_tap_markers(
     mut events: MessageReader<ClickMoveIntent>,
     mut commands: Commands,
     assets: Option<Res<MarkerAssets>>,
-    heights: Res<TerrainHeights>,
+    config: Res<WorldConfig>,
 ) {
     let Some(assets) = assets else { return };
     for ev in events.read() {
         let target = ev.target;
         // Lift the sphere a bit above the surface so it isn't half-buried.
-        let y = heights.ground_y(target.x, target.y) + 0.5;
+        let y = terrain_gen::terrain_top_y(target.x, target.y, &config) + 0.5;
         commands.spawn((
             TapMarker {
                 ttl: TAP_TTL,
@@ -105,7 +105,7 @@ pub(crate) fn tick_tap_markers(
 pub(crate) fn sync_walk_target_marker(
     mut commands: Commands,
     target: Res<MoveTarget>,
-    heights: Res<TerrainHeights>,
+    config: Res<WorldConfig>,
     assets: Option<Res<MarkerAssets>>,
     mut existing: Query<(Entity, &mut Transform), With<WalkTargetMarker>>,
 ) {
@@ -114,7 +114,7 @@ pub(crate) fn sync_walk_target_marker(
         Some(t) => {
             // Slightly above the surface so the disc is visible on top
             // of the terrain block.
-            let y = heights.ground_y(t.x, t.y) + 0.06;
+            let y = terrain_gen::terrain_top_y(t.x, t.y, &config) + 0.06;
             let pos = Vec3::new(t.x, y, t.y);
             if let Ok((_, mut tf)) = existing.single_mut() {
                 tf.translation = pos;

@@ -12,7 +12,7 @@
 
 use bevy::prelude::*;
 
-use crate::data::{Facing, GameCamera, Player};
+use crate::data::{Facing, GameCamera, Player, PlayerSlot};
 
 struct FaceAsset {
     mesh: Handle<Mesh>,
@@ -77,33 +77,36 @@ pub fn attach_player_visuals(
 
 /// Picks front / side / back asset per frame based on the angle between
 /// the player's `Facing` and the player→camera vector (XZ plane).
+/// Each player matches by `PlayerSlot`; falls back to slot 0's camera.
 pub fn update_player_face_view(
-    cam_q: Query<&Transform, (With<GameCamera>, Without<Player>)>,
+    cam_q: Query<(&Transform, &PlayerSlot), (With<GameCamera>, Without<Player>)>,
     assets: Option<Res<PlayerAssets>>,
     mut player_q: Query<
         (
             &Transform,
             &Facing,
+            &PlayerSlot,
             &mut Mesh3d,
             &mut MeshMaterial3d<StandardMaterial>,
         ),
         With<Player>,
     >,
 ) {
-    let Some(assets) = assets else {
-        return;
-    };
-    let Ok(cam_tf) = cam_q.single() else {
-        return;
-    };
-    for (tf, facing, mut mesh, mut mat) in &mut player_q {
+    let Some(assets) = assets else { return };
+    if cam_q.is_empty() { return };
+
+    for (tf, facing, &PlayerSlot(p_slot), mut mesh, mut mat) in &mut player_q {
+        // Use the matching camera, fall back to the first available.
+        let cam_tf = cam_q
+            .iter()
+            .find(|&(_, &PlayerSlot(s))| s == p_slot)
+            .or_else(|| cam_q.iter().next())
+            .map(|(t, _)| t);
+        let Some(cam_tf) = cam_tf else { continue };
+
         let pc = (cam_tf.translation - tf.translation).xz();
-        if pc.length_squared() < 1e-4 {
-            continue;
-        }
+        if pc.length_squared() < 1e-4 { continue }
         let pc = pc.normalize();
-        // 5 buckets at angle thresholds ≈ ±32° and ±67° from facing.
-        // dot = cos(angle), so cos(32°)≈0.85 and cos(67°)≈0.40.
         let dot = facing.0.dot(pc);
         let asset = if dot > 0.85 {
             &assets.front
@@ -122,13 +125,18 @@ pub fn update_player_face_view(
 }
 
 pub fn billboard_player(
-    cam_q: Query<&Transform, (With<GameCamera>, Without<Player>)>,
-    mut player_q: Query<&mut Transform, With<Player>>,
+    cam_q: Query<(&Transform, &PlayerSlot), (With<GameCamera>, Without<Player>)>,
+    mut player_q: Query<(&mut Transform, &PlayerSlot), With<Player>>,
 ) {
-    let Ok(cam_tf) = cam_q.single() else {
-        return;
-    };
-    for mut tf in &mut player_q {
+    if cam_q.is_empty() { return }
+
+    for (mut tf, &PlayerSlot(p_slot)) in &mut player_q {
+        let cam_tf = cam_q
+            .iter()
+            .find(|&(_, &PlayerSlot(s))| s == p_slot)
+            .or_else(|| cam_q.iter().next())
+            .map(|(t, _)| t);
+        let Some(cam_tf) = cam_tf else { continue };
         let to_cam = cam_tf.translation - tf.translation;
         let yaw = to_cam.x.atan2(to_cam.z);
         tf.rotation = Quat::from_rotation_y(yaw);

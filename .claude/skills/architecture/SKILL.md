@@ -50,6 +50,34 @@ this session.
    `ServerReplicatePlugin::<T>::default()` in `server/mod.rs`. Game
    code stays untouched — change detection wires it up. See
    `docsai/architecture.md` → "Network replication".
+9. **Avoid graphic artifacts (Z-fighting, alpha sort, alpha bleed).**
+   When two surfaces are nearly co-planar the GPU can't decide which
+   is "in front" — pixels flicker between them. Concrete rules:
+   - **Geometry on geometry** (building floor on terrain, decal on
+     wall, raised platform on ground): keep at least **0.05 world
+     units** of separation, and pick a clear winner — the higher
+     surface should ALWAYS be > the lower surface, never equal,
+     never tied to user-chosen heights.
+   - **Sample, don't assume.** When placing geometry on top of
+     terrain, *read* `TerrainHeights` at spawn time and add a
+     positive offset. See `server/buildings.rs::spawn_demo_buildings`
+     for the pattern.
+   - **Walls into floor slabs**: span only `lower_floor.y` to
+     `upper_floor.y - slab_thickness` so the wall mesh never punches
+     into the upper slab.
+   - **Per-entity material mutation requires per-entity material
+     handles.** If you want one wall to fade transparent without all
+     siblings fading too, *clone* `materials.add(StandardMaterial { … })`
+     once per spawned entity. Sharing a `Handle<StandardMaterial>`
+     across many entities means changing one changes them all.
+   - **Alpha-blended geometry doesn't write depth** → it can sort
+     incorrectly against itself or other transparents. Use
+     `AlphaMode::Blend` only when you actually need a smooth fade
+     (occlusion, particles); prefer `AlphaMode::Mask` for cutout
+     textures (1-bit alpha, fast, depth-correct).
+   - **Hide back faces of transparent geometry** — set `cull_mode:
+     None` on alpha-blended materials so the inside of a faded wall
+     is visible, not a one-sided plane.
 8. **All UI must be mobile-friendly.** Every overlay, HUD, panel,
    button must be readable and operable on small phone screens
    (target ≥ 360 × 640 px). Concretely:

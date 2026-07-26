@@ -1,12 +1,16 @@
-//! World tuning constants and the terrain heightmap resource.
+//! World tuning constants and user-tunable settings.
 
 use bevy::prelude::*;
 
 /// Tunables for world generation and player physics. Static during play.
+///
+/// Note: `world_radius_cells` is the *world boundary* — beyond it the
+/// player is clamped. Larger = bigger explorable world. The value is
+/// also used by chunk loading to know when to stop spawning chunks.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct WorldConfig {
-    /// World is `size x size` voxel columns, centred on origin.
-    pub size: i32,
+    /// Half-extent of the world in cells. Total cells = `(2 * radius)^2`.
+    pub world_radius_cells: i32,
     /// Smaller = larger features.
     pub noise_scale: f32,
     /// Peak height in blocks.
@@ -18,7 +22,7 @@ pub struct WorldConfig {
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            size: 64,
+            world_radius_cells: 32, // 64x64 cells default
             noise_scale: 0.08,
             height_scale: 9.0,
             player_speed: 8.0,
@@ -28,147 +32,90 @@ impl Default for WorldConfig {
 }
 
 /// User-tunable preferences. Edited at runtime via the settings UI.
-///
-/// Lives in `data/` because it's read by `client_sim` (camera framing,
-/// orbit speed) and `render` (camera lerp), and written by `render`
-/// (settings UI buttons).
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct Settings {
-    /// How quickly the rendered camera tweens toward `DesiredCameraView`.
-    /// Higher = snappier; lower = floatier inertia. Range \[1.0, 20.0\].
+    // ── Camera ────────────────────────────────────────────────────────
     pub camera_lerp_speed: f32,
-    /// Q/E camera orbit speed in radians/second. Range \[0.5, 5.0\].
     pub camera_orbit_speed: f32,
-    /// Horizontal distance from player to camera. Range \[5.0, 30.0\].
     pub camera_distance: f32,
-    /// Camera height above player. Range \[3.0, 30.0\].
     pub camera_height: f32,
-    /// **Predictive lookahead in seconds.** The camera focal point is
-    /// `player + smoothed_velocity * lookahead`, so during steady
-    /// movement the camera leads the player by `velocity * lookahead`,
-    /// cancelling the natural lag of the focus lerp. Setting this to
-    /// `1 / camera_lerp_speed` (≈ 0.25 with default speed 4.0) keeps
-    /// the player exactly centred at constant speed. Range
-    /// \[0.0, 1.0\] — 0 reverts to "always behind" lag.
     pub camera_lookahead: f32,
-    /// **How fast the velocity estimate adapts** (rate constant for
-    /// the exponential filter on instantaneous player velocity). Higher
-    /// = prediction snaps to direction changes immediately (responsive
-    /// but jittery on noisy motion); lower = prediction lags
-    /// direction changes (stable but the "drag behind" lasts longer
-    /// after starting/stopping). Range \[1.0, 20.0\].
     pub camera_velocity_smoothing: f32,
-    /// Whether the on-screen joystick (bottom-left) is shown and
-    /// processes touch / mouse input. Defaults to true on mobile,
-    /// false on desktop.
+    // ── Input ─────────────────────────────────────────────────────────
     pub joystick_enabled: bool,
+    // ── Graphics ──────────────────────────────────────────────────────
+    /// Enable real-time directional shadows. Adds significant cost on
+    /// mobile (Mali GPUs in particular — see android-debugging-log).
+    pub shadows_enabled: bool,
+    /// Enable distance fog (atmospheric haze hiding chunk pop-in).
+    pub fog_enabled: bool,
+    /// How many chunks (each `CHUNK_SIZE`²) around the camera to keep
+    /// loaded. Doubles as the LOD radius.
+    pub render_distance_chunks: i32,
+    // ── Physics ───────────────────────────────────────────────────────
+    /// Master toggle for all collision response (walls + bodies). Off
+    /// reverts to the previous "ghost everything" behaviour.
+    pub collisions_enabled: bool,
+    /// Cylinder radius used for the player ↔ wall and player ↔ body
+    /// collision tests. ~0.4 ≈ shoulder width at our scale.
+    pub player_radius: f32,
+    /// Cylinder radius for monster ↔ wall and ↔ body tests.
+    pub monster_radius: f32,
+    /// Draw wall AABBs and body cylinders as gizmo wireframes so the
+    /// player can see exactly what the collision system sees.
+    pub debug_collisions: bool,
+    // ── World ─────────────────────────────────────────────────────────
+    /// Sun-direction azimuth (degrees, 0 = sun in +X direction).
+    pub sun_azimuth_deg: f32,
+    /// Sun-direction elevation above horizon (degrees, 90 = directly above).
+    pub sun_elevation_deg: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            // Camera
             camera_lerp_speed: 4.0,
             camera_orbit_speed: 2.0,
             camera_distance: 14.0,
             camera_height: 14.0,
             camera_lookahead: 0.25,
             camera_velocity_smoothing: 4.0,
+            // Input
             joystick_enabled: cfg!(any(target_os = "android", target_os = "ios")),
+            // Graphics
+            shadows_enabled: !cfg!(target_os = "android"), // off on Mali
+            fog_enabled: true,
+            render_distance_chunks: 4,
+            // Physics
+            collisions_enabled: true,
+            player_radius: 0.4,
+            monster_radius: 0.45,
+            debug_collisions: false,
+            // Sun
+            sun_azimuth_deg: 60.0,
+            sun_elevation_deg: 60.0,
         }
     }
 }
 
-/// Screen-space layout for the on-screen joystick. Constants live here
-/// so both `client_sim` (for hit-testing) and `render` (for placing UI
-/// nodes) reference the exact same numbers — no drift.
+// ── Joystick screen layout (shared by client_sim hit-test + render UI) ──
 pub mod joystick_layout {
     use bevy::math::Vec2;
-
-    /// Distance from the left window edge to the joystick centre (px).
     pub const CENTER_X_FROM_LEFT: f32 = 100.0;
-    /// Distance from the bottom window edge to the joystick centre (px).
     pub const CENTER_Y_FROM_BOTTOM: f32 = 130.0;
-    /// Visible base ring radius (px) — also the maximum knob deflection.
     pub const BASE_RADIUS: f32 = 70.0;
-    /// Visible knob radius (px).
     pub const KNOB_RADIUS: f32 = 26.0;
 
-    /// Joystick centre in window pixel coordinates (origin = top-left,
-    /// y grows downward — matches `Window::cursor_position()` and
-    /// `Touch::position()`).
     pub fn screen_center(window_height: f32) -> Vec2 {
         Vec2::new(CENTER_X_FROM_LEFT, window_height - CENTER_Y_FROM_BOTTOM)
     }
-
-    /// True iff `point` lies within the joystick's base circle.
     pub fn contains(point: Vec2, window_height: f32) -> bool {
         (point - screen_center(window_height)).length() <= BASE_RADIUS
     }
 }
 
-/// Surface height per (x, z) world cell, populated by the server during
-/// startup. Read by gameplay (snap-to-ground) and arbitrary tools.
-#[derive(Resource, Default)]
-pub struct TerrainHeights {
-    pub size: i32,
-    /// Row-major: `cells[(z + size/2) * size + (x + size/2)]`.
-    pub cells: Vec<i32>,
-}
-
-impl TerrainHeights {
-    pub fn at(&self, x: i32, z: i32) -> i32 {
-        if self.cells.is_empty() {
-            return 0;
-        }
-        let half = self.size / 2;
-        let lx = (x + half).clamp(0, self.size - 1) as usize;
-        let lz = (z + half).clamp(0, self.size - 1) as usize;
-        self.cells[lz * self.size as usize + lx]
-    }
-
-    /// World-space Y of the top of the surface block at this XZ.
-    pub fn ground_y(&self, world_x: f32, world_z: f32) -> f32 {
-        let xi = world_x.round() as i32;
-        let zi = world_z.round() as i32;
-        // Block centred at y=h, top face at y=h+0.5
-        self.at(xi, zi) as f32 + 0.5
-    }
-
-    /// March a ray against the heightmap and return the first
-    /// world-space surface intersection, if any.
-    ///
-    /// Used by click-to-move: projecting the click onto a flat y=0
-    /// plane biases the target toward the camera's far side when the
-    /// player clicks on a hill. Marching the actual surface lands the
-    /// target where the user pointed.
-    pub fn raycast(&self, ray: Ray3d, max_distance: f32) -> Option<Vec3> {
-        if self.cells.is_empty() {
-            return None;
-        }
-        let origin = ray.origin;
-        let dir = *ray.direction;
-        // Camera underground / starting inside a hill — no useful hit.
-        let mut prev_above = origin.y - self.ground_y(origin.x, origin.z);
-        if prev_above < 0.0 {
-            return None;
-        }
-        const STEP: f32 = 0.5; // half a block — fine enough for orbiting cameras
-        let mut t = 0.0;
-        while t < max_distance {
-            t += STEP;
-            let p = origin + dir * t;
-            let above = p.y - self.ground_y(p.x, p.z);
-            if above <= 0.0 {
-                // Crossed the surface between the previous sample
-                // (above ≥ 0) and this one (below ≤ 0). Linearly
-                // interpolate to estimate the crossing point.
-                let denom = prev_above - above;
-                let frac = if denom.abs() > 1e-6 { prev_above / denom } else { 0.0 };
-                let hit_t = t - STEP + frac * STEP;
-                return Some(origin + dir * hit_t);
-            }
-            prev_above = above;
-        }
-        None
-    }
-}
+/// Cell-grid chunk size for terrain rendering. Each chunk is one
+/// mesh; chunks within `Settings.render_distance_chunks` of the camera
+/// are kept loaded.
+pub const CHUNK_SIZE: i32 = 32;

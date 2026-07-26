@@ -13,7 +13,7 @@ pub mod data;
 pub mod render;
 pub mod server;
 
-use bevy::{prelude::*, window::AppLifecycle, winit::WinitSettings};
+use bevy::{prelude::*, window::{AppLifecycle, RequestRedraw, WindowOccluded}, winit::WinitSettings};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use bevy::window::WindowMode;
 
@@ -31,13 +31,31 @@ pub fn main() {
             render::RenderPlugin,
         ))
         .insert_resource(winit_settings())
-        .add_systems(Update, handle_lifetime)
+        .add_systems(Update, (handle_lifetime, handle_unocclude))
         .run();
 }
 
 fn handle_lifetime(mut events: MessageReader<AppLifecycle>) {
     for _e in events.read() {}
 }
+
+/// Force a redraw when the window returns from a minimised/occluded state.
+/// Without this, wgpu holds on to a stale swapchain surface and the screen
+/// stays black until the next input event triggers a repaint.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn handle_unocclude(
+    mut events: MessageReader<WindowOccluded>,
+    mut redraw: MessageWriter<RequestRedraw>,
+) {
+    for ev in events.read() {
+        if !ev.occluded {
+            redraw.write(RequestRedraw);
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn handle_unocclude() {}
 
 fn winit_settings() -> WinitSettings {
     #[cfg(any(target_os = "android", target_os = "ios"))]

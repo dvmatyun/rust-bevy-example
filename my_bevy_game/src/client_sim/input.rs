@@ -1,77 +1,112 @@
 //! Translates raw player input into game / view intents.
 //!
-//! Allowed: `ButtonInput<KeyCode>`, `Touches`. NOT allowed: writing to
-//! game-state Transforms directly — emit a `MoveIntent` (server) or
-//! `CameraOrbitIntent` (client view) instead.
+//! In `PlayingSingle` mode only P1 systems run and intents are written
+//! directly to `MoveIntent`.
+//!
+//! In `PlayingMultiplayer` mode both P1 and P2 systems run and movement
+//! intents are written to `BufferedMoveIntent` so the network-simulation
+//! layer can delay them ~100 ms before the server sees them.
 
 use bevy::prelude::*;
 
 use crate::client_sim::camera_view::CameraOrbit;
-use crate::data::{CameraOrbitIntent, MoveIntent, MoveTarget};
+use crate::data::{
+    BufferedMoveIntent, CameraOrbitIntent, GameCamera, GameState, MoveIntent, MoveTarget,
+    PlayerSlot, TeleportIntent,
+};
 
-/// WASD / arrow keys in *camera-relative* directions:
-///   W = away from camera ("forward")
-///   S = toward camera ("back")
-///   A = left of camera   D = right of camera
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Returns the smoothed azimuth of the camera for the given `slot`,
+/// or 0.0 if no camera exists yet (first frame of a new game session).
+fn camera_azimuth(
+    cameras: &Query<(&CameraOrbit, &PlayerSlot), With<GameCamera>>,
+    slot: u8,
+) -> f32 {
+    cameras
+        .iter()
+        .find(|&(_, &PlayerSlot(s))| s == slot)
+        .map(|(orbit, _)| orbit.smoothed_azimuth)
+        .unwrap_or(0.0)
+}
+
+/// Convert a local (screen-relative) 2D input vector and a camera
+/// azimuth into a world-XZ direction.
+fn local_to_world(local: Vec2, azimuth: f32) -> Vec2 {
+    let forward = Vec2::new(-azimuth.sin(), -azimuth.cos());
+    let right = Vec2::new(azimuth.cos(), -azimuth.sin());
+    local.x * right + local.y * forward
+}
+
+// ── Player-1 systems (WASD / Q-E / T) ───────────────────────────────────────
+
+/// WASD / arrow keys → camera-relative world direction for player 1.
 ///
-/// Pressing any movement key cancels an outstanding click-to-move
-/// target so WASD always wins.
-pub fn gather_move_input(
-    // 📘 ButtonInput<KeyCode> is a *resource* tracking which keys
-    // are currently pressed / just-pressed / just-released. Bevy
-    // updates it from the OS input events each frame.
+/// In `PlayingSingle`, emits `MoveIntent` directly.
+/// In `PlayingMultiplayer`, emits `BufferedMoveIntent` so the delay
+/// simulation can introduce ~100 ms of latency.
+pub fn gather_move_input_p1(
     keys: Res<ButtonInput<KeyCode>>,
-    orbit: Res<CameraOrbit>,
+    cameras: Query<(&CameraOrbit, &PlayerSlot), With<GameCamera>>,
+    state: Res<State<GameState>>,
     mut click_target: ResMut<MoveTarget>,
-    // 📘 MessageWriter<T> is the "send" half of the messaging system.
-    // `.write(T)` enqueues an event for any reader (here:
-    // `apply_movement` in the server).
-    mut writer: MessageWriter<MoveIntent>,
+    mut direct: MessageWriter<MoveIntent>,
+    mut buffered: MessageWriter<BufferedMoveIntent>,
 ) {
-    // Camera-local input: forward = +Y_local, right = +X_local.
     let mut local = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+    if keys.pressed(KeyCode::KeyW) {
         local.y += 1.0;
     }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+    if keys.pressed(KeyCode::KeyS) {
         local.y -= 1.0;
     }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+    if keys.pressed(KeyCode::KeyA) {
         local.x -= 1.0;
     }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+    if keys.pressed(KeyCode::KeyD) {
         local.x += 1.0;
     }
     if local == Vec2::ZERO {
         return;
     }
-
-    // Keyboard cancels click-to-move.
     click_target.0 = None;
-
-    let local = local.normalize();
-    let a = orbit.smoothed_azimuth;
-    // 📘 The math below converts "what the user pressed in screen
-    // space" into "world XZ direction the player should move".
-    //
-    // Camera position (offset from focus) = `(sin a, _, cos a) * dist`.
-    // So the *direction from camera to player* (in XZ) is the
-    // negative: `(-sin a, -cos a)`. That's "forward" (away from camera,
-    // i.e. away from the screen).
-    let forward = Vec2::new(-a.sin(), -a.cos());
-    // "Right" is forward rotated 90° clockwise (when viewed from above).
-    // The 2D rotation matrix for -π/2 applied to forward gives this.
-    let right = Vec2::new(a.cos(), -a.sin());
-    // Linear combination: project the local input onto world axes.
-    let world = local.x * right + local.y * forward;
-    writer.write(MoveIntent {
-        direction: world,
-    });
+    let world = local_to_world(local.normalize(), camera_azimuth(&cameras, 0));
+    if *state.get() == GameState::PlayingMultiplayer {
+        buffered.write(BufferedMoveIntent { direction: world, player_slot: 0 });
+    } else {
+        direct.write(MoveIntent { direction: world, player_slot: 0 });
+    }
 }
 
-/// Q/E rotates the camera around the player. Q = counter-clockwise,
-/// E = clockwise (looking from above).
-pub fn gather_camera_orbit_input(
+/// Player-2 movement: arrow keys → camera-relative world direction.
+/// Always writes `BufferedMoveIntent` (only active in multiplayer).
+pub fn gather_move_input_p2(
+    keys: Res<ButtonInput<KeyCode>>,
+    cameras: Query<(&CameraOrbit, &PlayerSlot), With<GameCamera>>,
+    mut buffered: MessageWriter<BufferedMoveIntent>,
+) {
+    let mut local = Vec2::ZERO;
+    if keys.pressed(KeyCode::ArrowUp) {
+        local.y += 1.0;
+    }
+    if keys.pressed(KeyCode::ArrowDown) {
+        local.y -= 1.0;
+    }
+    if keys.pressed(KeyCode::ArrowLeft) {
+        local.x -= 1.0;
+    }
+    if keys.pressed(KeyCode::ArrowRight) {
+        local.x += 1.0;
+    }
+    if local == Vec2::ZERO {
+        return;
+    }
+    let world = local_to_world(local.normalize(), camera_azimuth(&cameras, 1));
+    buffered.write(BufferedMoveIntent { direction: world, player_slot: 1 });
+}
+
+/// Q / E orbit player-1's camera. Never buffered (local view operation).
+pub fn gather_camera_orbit_input_p1(
     keys: Res<ButtonInput<KeyCode>>,
     mut writer: MessageWriter<CameraOrbitIntent>,
 ) {
@@ -83,6 +118,35 @@ pub fn gather_camera_orbit_input(
         delta += 1.0;
     }
     if delta != 0.0 {
-        writer.write(CameraOrbitIntent { delta });
+        writer.write(CameraOrbitIntent { delta, player_slot: 0 });
+    }
+}
+
+/// U / O orbit player-2's camera. Only active in multiplayer.
+pub fn gather_camera_orbit_input_p2(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut writer: MessageWriter<CameraOrbitIntent>,
+) {
+    let mut delta = 0.0;
+    if keys.pressed(KeyCode::KeyU) {
+        delta -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyO) {
+        delta += 1.0;
+    }
+    if delta != 0.0 {
+        writer.write(CameraOrbitIntent { delta, player_slot: 1 });
+    }
+}
+
+/// T = teleport up 3 units, Shift+T = down. Debug only; player 0.
+pub fn gather_teleport_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut writer: MessageWriter<TeleportIntent>,
+) {
+    if keys.just_pressed(KeyCode::KeyT) {
+        let down = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let delta_y = if down { -3.0 } else { 3.0 };
+        writer.write(TeleportIntent { delta_y, player_slot: 0 });
     }
 }

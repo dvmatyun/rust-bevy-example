@@ -60,7 +60,7 @@
       "label": "Android: Build APK (debug)",
       "type": "shell",
       "command": "cargo",
-      "args": ["apk", "build", "-p", "my_bevy_game", "--lib"],
+      "args": ["apk", "build", "-p", "my_bevy_game", "--lib", "--target", "aarch64-linux-android"],
       "options": {
         "env": {
           "ANDROID_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk",
@@ -75,7 +75,7 @@
       "label": "Android: Build APK (release)",
       "type": "shell",
       "command": "cargo",
-      "args": ["apk", "build", "-p", "my_bevy_game", "--lib", "--release"],
+      "args": ["apk", "build", "-p", "my_bevy_game", "--lib", "--release", "--target", "aarch64-linux-android"],
       "options": {
         "env": {
           "ANDROID_HOME": "C:/Users/worc1/AppData/Local/Android/Sdk",

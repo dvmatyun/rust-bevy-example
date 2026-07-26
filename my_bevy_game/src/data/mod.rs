@@ -9,12 +9,15 @@
 
 mod components;
 mod config;
+pub mod game_state;
 mod intents;
 pub mod replication;
+pub mod terrain_gen;
 
 pub use components::*;
 pub use config::*;
 pub use config::joystick_layout;
+pub use game_state::GameState;
 pub use intents::*;
 // Re-exports of the public replication API. Some are not used inside
 // the crate yet — they're for game code (and future networking).
@@ -52,15 +55,20 @@ pub struct DataPlugin;
 
 impl Plugin for DataPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MoveIntent>()
+        app.init_state::<GameState>()
+            .add_message::<MoveIntent>()
+            .add_message::<BufferedMoveIntent>()
             .add_message::<CameraOrbitIntent>()
             .add_message::<ClickMoveIntent>()
+            .add_message::<TeleportIntent>()
+            .add_message::<SpawnMonstersIntent>()
+            .add_message::<DespawnMonstersIntent>()
             .insert_resource(WorldConfig::default())
             .insert_resource(Settings::default())
-            .insert_resource(DesiredCameraView::default())
+            // DesiredCameraView is now a Component on GameCamera entities,
+            // NOT a global Resource — removed from here.
             .insert_resource(JoystickState::default())
             .insert_resource(MoveTarget::default())
-            .insert_resource(TerrainHeights::default())
             .configure_sets(
                 Update,
                 (
